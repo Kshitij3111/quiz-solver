@@ -13,13 +13,9 @@ import config
 
 async def solve_quiz(email: str, secret: str, start_url: str):
     """
-    Full solver loop:
-    1. Fetch page
-    2. Parse quiz instructions
-    3. LLM generates a structured plan
-    4. Execute plan (download → extract → compute)
-    5. Submit answer
-    6. Follow next URL until no more or timeout
+    Full automatic solver:
+    - Handles normal quizzes
+    - Handles scrape-type quizzes (/demo-scrape, /demo-scrape-data)
     """
 
     deadline = time.time() + config.QUIZ_TIMEOUT_SECONDS
@@ -39,7 +35,7 @@ async def solve_quiz(email: str, secret: str, start_url: str):
         print(f"\n--- Solving quiz: {url} ---")
 
         # ----------------------------------------------------------
-        # 1. FETCH PAGE (Playwright JS-rendered)
+        # 1. FETCH PAGE (JS-rendered)
         # ----------------------------------------------------------
         try:
             html, resources = await fetch_page_and_context(url)
@@ -48,25 +44,60 @@ async def solve_quiz(email: str, secret: str, start_url: str):
             return
 
         # ----------------------------------------------------------
-        # 2. PARSE PAGE (extract submit_url, links, atob, pre_json)
+        # 2. PARSE PAGE
         # ----------------------------------------------------------
         quiz = parse_quiz_from_page(html, resources)
 
+        # ----------------------------------------------------------
+        # SPECIAL CASE: SCRAPE QUIZ (NO SUBMIT URL)
+        # ----------------------------------------------------------
+        if quiz.get("scrape_url") and not quiz.get("submit_url"):
+            print("[INFO] Detected SCRAPE quiz")
+
+            try:
+                scrape_html, _ = await fetch_page_and_context(quiz["scrape_url"])
+            except Exception as e:
+                print("[ERROR] Failed to fetch scrape-data:", e)
+                return
+
+            # Extract the plain secret code
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(scrape_html, "html.parser")
+            secret_code = soup.get_text().strip()
+
+            print("[INFO] Scraped secret code:", secret_code)
+
+            # The submit endpoint for scrape quizzes is always this:
+            submit_url = "https://tds-llm-analysis.s-anand.net/submit"
+
+            answer_obj = {"answer": secret_code}
+
+            try:
+                resp = submit_answer(submit_url, session, answer_obj)
+            except Exception as e:
+                print("[ERROR] Submission failed:", e)
+                return
+
+            print("[INFO] Server response:", resp)
+
+            url = resp.get("url")  # Continue chain
+            continue  # Restart loop for next quiz page
+
+        # ----------------------------------------------------------
+        # NORMAL QUIZ (has submit_url)
+        # ----------------------------------------------------------
         if not quiz.get("submit_url"):
             print("[ERROR] Could not find submit URL on page.")
             return
 
         # ----------------------------------------------------------
-        # 3. PLAN WITH LLM (or fallback)
+        # 3. PLAN WITH LLM
         # ----------------------------------------------------------
         try:
             plan_struct = await plan_with_llm(quiz, session)
         except Exception as e:
             print(f"[ERROR] LLM planning failed: {e}")
             return
-
-        # plan_struct contains:
-        # { "plan": {"steps": [...]}, "answer": maybe_final, "explain": ... }
 
         plan = plan_struct.get("plan", {})
         print("[INFO] Generated plan:", plan)
@@ -80,14 +111,14 @@ async def solve_quiz(email: str, secret: str, start_url: str):
             print(f"[ERROR] Plan execution failed: {e}")
             return
 
-        # If LLM already produced direct answer (rare)
+        # Fallback direct answer
         if plan_struct.get("answer") is not None:
             answer_obj["answer"] = plan_struct["answer"]
 
         print("[INFO] Final answer:", answer_obj["answer"])
 
         # ----------------------------------------------------------
-        # 5. SUBMIT ANSWER
+        # 5. SUBMIT
         # ----------------------------------------------------------
         try:
             resp = submit_answer(quiz["submit_url"], session, answer_obj)
@@ -98,8 +129,8 @@ async def solve_quiz(email: str, secret: str, start_url: str):
         print("[INFO] Server response:", resp)
 
         # ----------------------------------------------------------
-        # 6. NEXT URL OR END
+        # 6. NEXT URL
         # ----------------------------------------------------------
-        url = resp.get("url")  # None means quiz is complete
+        url = resp.get("url")
 
     print("\n=== FINISHED QUIZ (or timed out) ===")
