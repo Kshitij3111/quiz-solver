@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: quiz-solver
+    env: docker
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: QUIZ_SECRET
+        value: Kangaroo
+      - key: OPENAI_API_KEY
+        sync: false
