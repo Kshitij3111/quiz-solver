@@ -3,6 +3,7 @@ import os
 
 QUIZ_SECRET = os.getenv("QUIZ_SECRET", "Kangaroo")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 
 # timeouts
